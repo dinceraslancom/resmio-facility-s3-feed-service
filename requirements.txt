@@ -1,0 +1,7 @@
+asyncpg
+aioboto3
+pydantic
+pydantic-settings
+pytest
+pytest-asyncio
+pytest-cov

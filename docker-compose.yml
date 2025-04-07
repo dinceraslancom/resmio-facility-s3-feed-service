@@ -1,0 +1,82 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: facility_db_local
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-devuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
+      POSTGRES_DB: ${POSTGRES_DB:-facilities}
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/db:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-devuser} -d ${POSTGRES_DB:-facilities}" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # S3-Compatible Storage
+  minio:
+    image: minio/minio:latest
+    container_name: minio_local
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio-access-key}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minio-secret-key}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  create-buckets:
+    image: minio/mc
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minio-access-key}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minio-secret-key}
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME:-local-facility-feeds}
+    volumes:
+      - ./scripts/minio/init-bucket.sh:/init-bucket.sh
+    entrypoint: [ "./init-bucket.sh" ]
+    restart: "no"
+
+  feed-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: facility_feed_service_compose
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-devuser}:${POSTGRES_PASSWORD:-devpassword}@db:5432/${POSTGRES_DB:-facilities}
+      AWS_ENDPOINT_URL: http://minio:9000
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME:-local-facility-feeds}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minio-access-key}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minio-secret-key}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      MAX_CONCURRENT_UPLOADS: ${MAX_CONCURRENT_UPLOADS:-10}
+      FEED_CHUNK_SIZE: ${FEED_CHUNK_SIZE:-100}
+    depends_on:
+      db:
+        condition: service_healthy
+      create-buckets:
+        condition: service_completed_successfully
+    restart: "no"
+
+
+volumes:
+  postgres_data:
+  minio_data:
